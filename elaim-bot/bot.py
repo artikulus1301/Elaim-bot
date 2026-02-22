@@ -41,6 +41,11 @@ class ElaimBot(commands.Bot):
     async def setup_hook(self):
         """Инициализация при старте"""
         logger.info("Инициализация базы данных...")
+        
+        # Убедимся, что директория для БД существует (важно для Docker / Railway Volumes)
+        db_path = Path(self.config.DATABASE_PATH)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
         await self.db.init_db()
         
         # Наполнение базы модулями
