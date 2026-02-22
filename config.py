@@ -22,4 +22,9 @@ class Config:
 
     def validate(self) -> None:
         if not self.DISCORD_TOKEN:
-            raise ValueError("DISCORD_TOKEN не установлен!")
+            raise ValueError(
+                "DISCORD_TOKEN не установлен! \n\n"
+                "Если вы деплоите на Railway: \n"
+                "1. Зайдите во вкладку 'Variables' вашего сервиса.\n"
+                "2. Добавьте переменную DISCORD_TOKEN с вашим токеном от Discord Developer Portal."
+            )

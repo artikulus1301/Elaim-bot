@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
-# Load .env from the elaim-bot directory
+# Загрузка .env из текущей (корневой) директории
 env_path = Path(__file__).parent / '.env'
 load_dotenv(env_path)
 
@@ -52,7 +52,8 @@ class ElaimBot(commands.Bot):
         await seed_modules(self.db)
         
         # Загрузка Cogs
-        cogs = ['cogs.calculator', 'cogs.fleet', 'cogs.admin', 'cogs.market', 'cogs.combat', 'cogs.help']
+        # cogs.market временно отключен, так как файл отсутствует в репозитории
+        cogs = ['cogs.calculator', 'cogs.fleet', 'cogs.admin', 'cogs.combat', 'cogs.help']
         for cog in cogs:
             try:
                 await self.load_extension(cog)
