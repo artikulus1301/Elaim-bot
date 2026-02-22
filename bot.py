@@ -52,8 +52,7 @@ class ElaimBot(commands.Bot):
         await seed_modules(self.db)
         
         # Загрузка Cogs
-        # cogs.market временно отключен, так как файл отсутствует в репозитории
-        cogs = ['cogs.calculator', 'cogs.fleet', 'cogs.admin', 'cogs.combat', 'cogs.help']
+        cogs = ['cogs.market', 'cogs.calculator', 'cogs.fleet', 'cogs.admin', 'cogs.combat', 'cogs.help']
         for cog in cogs:
             try:
                 await self.load_extension(cog)
