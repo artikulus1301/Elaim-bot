@@ -1,0 +1,383 @@
+import discord
+from discord.ext import commands
+from models.database import Database
+from models.schemas import ShipStatus
+from utils.helpers import parse_ship_input, format_currency
+
+class FleetManager(commands.Cog):
+    """Управление флотом игрока"""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.db: Database = bot.db
+    
+    @commands.command(name="анкета", aliases=["регистрация", "start"])
+    async def register_fleet(self, ctx):
+        """
+        Регистрация новой флотилии
+        Запускает диалог сбора информации
+        """
+        # Проверяем, есть ли уже флот
+        existing = await self.db.get_fleet_by_user(ctx.author.id, ctx.guild.id)
+        if existing:
+            await ctx.send(f"❌ У вас уже есть флотилия **{existing.name}**. Используйте `!флот` для просмотра.")
+            return
+        
+        await ctx.send("⚓ **Регистрация новой флотилии**\nВведите название вашей флотилии:")
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        
+        try:
+            # Название флотилии
+            msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+            fleet_name = msg.content.strip()
+            
+            if len(fleet_name) < 2 or len(fleet_name) > 100:
+                await ctx.send("❌ Название должно быть от 2 до 100 символов.")
+                return
+            
+            await ctx.send("👤 Введите имя Тархана (командира флотилии):")
+            msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+            leader_name = msg.content.strip()
+            
+            if len(leader_name) < 2 or len(leader_name) > 50:
+                await ctx.send("❌ Имя должно быть от 2 до 50 символов.")
+                return
+            
+            # Создаем флот
+            fleet = await self.db.create_fleet(
+                user_id=ctx.author.id,
+                guild_id=ctx.guild.id,
+                name=fleet_name,
+                leader_name=leader_name
+            )
+            
+            # Начальные ресурсы
+            await self.db.update_fleet_resources(fleet.id, rations=100, methane=200)
+            
+            embed = discord.Embed(
+                title="✅ Флотилия зарегистрирована!",
+                description=f"**{fleet_name}**\nТархан: {leader_name}",
+                color=0x2ecc71
+            )
+            embed.add_field(
+                name="💰 Стартовый капитал",
+                value=f"{format_currency(fleet.gold)}\n100 пайков\n200 тонн метана",
+                inline=False
+            )
+            embed.add_field(
+                name="📝 Следующие шаги",
+                value="Используйте `!добавить_корабль` чтобы добавить корабли во флот\n"
+                      "Используйте `!флот` чтобы посмотреть статус",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+            
+        except TimeoutError:
+            await ctx.send("⏰ Время ожидания истекло. Попробуйте снова.")
+    
+    @commands.command(name="флот", aliases=["fleet", "таблица"])
+    async def show_fleet(self, ctx, member: discord.Member = None):
+        """
+        Показать таблицу флота игрока
+        Можно указать @упоминание чтобы посмотреть чужой флот
+        """
+        target_user = member or ctx.author
+        fleet = await self.db.get_fleet_by_user(target_user.id, ctx.guild.id)
+        
+        if not fleet:
+            if member:
+                await ctx.send(f"❌ У {target_user.mention} нет зарегистрированной флотилии.")
+            else:
+                await ctx.send("❌ У вас нет флотилии. Используйте `!анкета` для регистрации.")
+            return
+        
+        fleet_full = await self.db.get_fleet_with_ships(fleet.id)
+        embed_data = fleet_full.to_discord_embed()
+        
+        embed = discord.Embed.from_dict(embed_data)
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="добавить_корабль", aliases=["add_ship", "новый_корабль"])
+    async def add_ship(self, ctx):
+        """Добавить корабль во флот через диалог"""
+        fleet = await self.db.get_fleet_by_user(ctx.author.id, ctx.guild.id)
+        if not fleet:
+            await ctx.send("❌ Сначала зарегистрируйте флотилию командой `!анкета`")
+            return
+        
+        await ctx.send(
+            "🚀 **Добавление корабля**\n"
+            "Введите данные в формате:\n"
+            "`[Тип] пр-к [Проект] - [Позывной]`\n"
+            "(или полный формат: `... - [Экипаж]/[Макс] - [Статус]`)\n\n"
+            "**Доступные пресеты проектов:**\n"
+            "• Севастополь (Sevastopol)\n"
+            "• Тайфун (Typhon)\n"
+            "• Гладиатор (Gladiator)\n"
+            "• Наварин (Navarin)\n"
+            "• Гепард (Gepard)\n"
+            "• Молния (Lightning)\n\n"
+            "Пример: `Ударный Корвет пр-к Молния - Находчивый`"
+        )
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=120.0)
+            parsed = parse_ship_input(msg.content)
+            
+            if not parsed:
+                await ctx.send(
+                    "❌ Не удалось распознать формат.\n"
+                    "Убедитесь, что используете формат:\n"
+                    "`Ударный Корвет пр-к Молния - Находчивый`"
+                )
+                return
+            
+            # Создаем корабль
+            ship = await self.db.add_ship(
+                fleet_id=fleet.id,
+                ship_class=parsed['ship_class'].value,
+                project=parsed['project'],
+                callsign=parsed['callsign'],
+                current_crew=parsed['current_crew'],
+                required_crew=parsed['required_crew'],
+                status=parsed['status']
+            )
+            
+            # Добавляем базовые модули
+            await self.equip_default_modules(ship)
+            
+            await ctx.send(
+                f"✅ Корабль добавлен и оснащен!\n"
+                f"**{parsed['ship_class'].value.replace('_', ' ').title()}** \"{parsed['callsign']}\"\n"
+                f"Проект: {parsed['project']}\n"
+                f"Экипаж: {parsed['current_crew']}/{parsed['required_crew']}\n"
+                f"Статус: {parsed['status']}"
+            )
+            
+        except TimeoutError:
+            await ctx.send("⏰ Время ожидания истекло.")
+
+    async def equip_default_modules(self, ship):
+        """Устанавливает базовые модули в зависимости от класса или проекта"""
+        all_modules = await self.db.get_all_modules()
+        
+        # Helper to find module ID by partial name
+        def find_id(name_part):
+            for m in all_modules:
+                if name_part.lower() in m['name'].lower():
+                    return m['id']
+            return None
+
+        # Project-specific loadouts
+        project_name = ship.project.lower()
+        loadout = []
+        
+        if "севастополь" in project_name or "sevastopol" in project_name:
+            loadout = [
+                ("МК-2-180", 3), ("МК-6-180", 1), ("АК-725", 6), 
+                ("Зенит", 8), ("Спринт", 15), ("Х-15", 2),
+                ("Д-30С", 4), ("НК-30", 4), # Assumptions for fleet speed
+                ("Топливный", 10), ("Усиленная", 4), ("АСО-75", 4)
+            ]
+        elif "тайфун" in project_name or "typhon" in project_name:
+            loadout = [
+                ("2А37", 6), ("Зенит", 4), ("Спринт", 9),
+                ("РД-51", 4), ("Топливный", 8), ("Усиленная", 2)
+            ]
+        elif "гладиатор" in project_name or "gladiator" in project_name:
+            loadout = [
+                ("АК-100", 4), ("Д-30С", 2), ("Надир", 2), ("Палаш-1", 2),
+                ("АСО-75", 2), ("Топливный", 2), ("Сталь-1", 2)
+            ]
+        elif "наварин" in project_name or "navarin" in project_name:
+            loadout = [
+                ("АК-725", 2), ("Зенит", 2), ("ФАБ-1000", 2),
+                ("АСО-75", 1), ("РД-51", 1), ("Топливный", 1)
+            ]
+        elif "гепард" in project_name or "gepard" in project_name:
+            loadout = [
+                ("2А37", 4), ("Надир", 2), ("Спринт", 4), ("Палаш-1", 2),
+                ("РД-51", 2), ("Топливный", 2), ("Сталь-1", 1)
+            ]
+        elif "молния" in project_name or "lightning" in project_name:
+            loadout = [
+                ("АК-100", 2), ("РД-51", 2), ("Топливный", 1)
+            ]
+        else:
+            # Fallback to class-based defaults
+            if "корвет" in ship.ship_class:
+                loadout = [("Маневровый", 1), ("Топливный", 1), ("Обшивка", 1)]
+            elif "фрегат" in ship.ship_class:
+                loadout = [("РД-51", 1), ("Топливный", 2), ("Обшивка", 1), ("Сталь-1", 1), ("37мм", 2)]
+            elif "крейсер" in ship.ship_class:
+                loadout = [("РД-51", 4), ("Топливный", 4), ("Усиленная", 2), ("Сталь-1", 4), ("180мм", 2), ("37мм", 4)]
+            
+        for name_part, count in loadout:
+            mod_id = find_id(name_part)
+            if mod_id:
+                await self.db.add_module_to_ship(ship.id, mod_id, count)
+    
+    @commands.command(name="корабль", aliases=["ship", "stats", "статистика"])
+    async def show_ship_stats(self, ctx, *, callsign: str):
+        """Показать подробную статистику корабля"""
+        fleet = await self.db.get_fleet_by_user(ctx.author.id, ctx.guild.id)
+        if not fleet:
+            await ctx.send("❌ У вас нет флотилии.")
+            return
+
+        ships = await self.db.get_ships_by_fleet(fleet.id)
+        target_ship = next((s for s in ships if s.callsign.lower() == callsign.lower()), None)
+        
+        if not target_ship:
+            await ctx.send(f"❌ Корабль '{callsign}' не найден.")
+            return
+            
+        # Загружаем модули
+        from models.schemas import ShipModule
+        modules_data = await self.db.get_ship_modules(target_ship.id)
+        target_ship.modules = [ShipModule(**m) for m in modules_data]
+        
+        # Расчеты
+        total_hp = target_ship.total_hp
+        weight = target_ship.total_weight
+        thrust = target_ship.total_thrust
+        twr = thrust / weight if weight > 0 else 0
+        evasion = target_ship.evasion
+        
+        embed = discord.Embed(
+            title=f"🚀 {target_ship.callsign}",
+            description=f"**{target_ship.ship_class.replace('_', ' ').title()}** (Проект: {target_ship.project})",
+            color=0x3498db
+        )
+        
+        # Основные статы
+        stats_text = (
+            f"❤️ Прочность: **{total_hp}**\n"
+            f"⚖️ Вес: **{weight}т**\n"
+            f"💨 Тяга: **{thrust}т** (TWR: {twr:.2f})\n"
+            f"⚡ Уклонение: **{int(evasion*100)}%**\n"
+            f"👥 Экипаж: **{target_ship.current_crew}/{target_ship.required_crew}**"
+        )
+        embed.add_field(name="📊 Характеристики", value=stats_text, inline=False)
+        
+        # Модули
+        modules_text = ""
+        if target_ship.modules:
+            for sm in target_ship.modules:
+                if sm.module:
+                    modules_text += f"• **{sm.module.name}** x{sm.count}\n"
+        else:
+            modules_text = "*Нет установленных модулей*"
+            
+        embed.add_field(name="🛠️ Оснащение", value=modules_text, inline=False)
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name="удалить_корабль", aliases=["remove_ship"])
+    async def remove_ship(self, ctx, *, callsign: str):
+        """Удалить корабль по позывному"""
+        fleet = await self.db.get_fleet_by_user(ctx.author.id, ctx.guild.id)
+        if not fleet:
+            await ctx.send("❌ У вас нет флотилии.")
+            return
+        
+        ships = await self.db.get_ships_by_fleet(fleet.id)
+        target_ship = None
+        
+        for ship in ships:
+            if ship.callsign.lower() == callsign.lower():
+                target_ship = ship
+                break
+        
+        if not target_ship:
+            await ctx.send(f"❌ Корабль с позывным \"{callsign}\" не найден.")
+            return
+        
+        await self.db.remove_ship(target_ship.id)
+        await ctx.send(f"✅ Корабль \"{callsign}\" удален из флотилии.")
+    
+    @commands.command(name="обновить_экипаж", aliases=["crew", "экипаж"])
+    async def update_crew(self, ctx, callsign: str, new_crew: int):
+        """Обновить количество экипажа на корабле"""
+        fleet = await self.db.get_fleet_by_user(ctx.author.id, ctx.guild.id)
+        if not fleet:
+            await ctx.send("❌ У вас нет флотилии.")
+            return
+        
+        ships = await self.db.get_ships_by_fleet(fleet.id)
+        target_ship = None
+        
+        for ship in ships:
+            if ship.callsign.lower() == callsign.lower():
+                target_ship = ship
+                break
+        
+        if not target_ship:
+            await ctx.send(f"❌ Корабль с позывным \"{callsign}\" не найден.")
+            return
+        
+        if new_crew < 0 or new_crew > target_ship.required_crew * 2:
+            await ctx.send(f"❌ Некорректное количество экипажа (0-{target_ship.required_crew * 2}).")
+            return
+        
+        await self.db.update_ship_crew(target_ship.id, new_crew)
+        await ctx.send(
+            f"✅ Экипаж корабля \"{callsign}\" обновлен: {new_crew}/{target_ship.required_crew}"
+        )
+    
+    @commands.command(name="статус", aliases=["повреждения", "damage"])
+    async def update_status(self, ctx, callsign: str, *, new_status: str):
+        """Обновить статус повреждений корабля"""
+        fleet = await self.db.get_fleet_by_user(ctx.author.id, ctx.guild.id)
+        if not fleet:
+            await ctx.send("❌ У вас нет флотилии.")
+            return
+        
+        # Нормализуем статус
+        status_map = {
+            "в строю": ShipStatus.OPERATIONAL,
+            "строю": ShipStatus.OPERATIONAL,
+            "боеготов": ShipStatus.OPERATIONAL,
+            "легкие": ShipStatus.LIGHT_DAMAGE,
+            "легкие повреждения": ShipStatus.LIGHT_DAMAGE,
+            "средние": ShipStatus.MODERATE_DAMAGE,
+            "средние повреждения": ShipStatus.MODERATE_DAMAGE,
+            "тяжелые": ShipStatus.HEAVY_DAMAGE,
+            "тяжелые повреждения": ShipStatus.HEAVY_DAMAGE,
+            "критические": ShipStatus.CRITICAL_DAMAGE,
+            "крит": ShipStatus.CRITICAL_DAMAGE,
+            "уничтожен": ShipStatus.DESTROYED,
+            "мертв": ShipStatus.DESTROYED,
+        }
+        
+        status_key = new_status.lower().strip()
+        status = status_map.get(status_key)
+        
+        if not status:
+            available = ", ".join([s.value for s in ShipStatus])
+            await ctx.send(f"❌ Неизвестный статус. Доступные: {available}")
+            return
+        
+        ships = await self.db.get_ships_by_fleet(fleet.id)
+        target_ship = None
+        
+        for ship in ships:
+            if ship.callsign.lower() == callsign.lower():
+                target_ship = ship
+                break
+        
+        if not target_ship:
+            await ctx.send(f"❌ Корабль с позывным \"{callsign}\" не найден.")
+            return
+        
+        await self.db.update_ship_status(target_ship.id, status)
+        await ctx.send(f"✅ Статус корабля \"{callsign}\" изменен на: {status.value}")
+
+async def setup(bot):
+    await bot.add_cog(FleetManager(bot))
