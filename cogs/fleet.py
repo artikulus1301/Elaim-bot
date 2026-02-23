@@ -101,127 +101,94 @@ class FleetManager(commands.Cog):
         await ctx.send(embed=embed)
     
     @commands.command(name="добавить_корабль", aliases=["add_ship", "новый_корабль"])
-    async def add_ship(self, ctx):
-        """Добавить корабль во флот через диалог"""
+    async def add_ship(self, ctx, *, ship_data: str = None):
+        """Добавить корабль во флот (упрощенный или полный формат)"""
         fleet = await self.db.get_fleet_by_user(ctx.author.id, ctx.guild.id)
         if not fleet:
             await ctx.send("❌ Сначала зарегистрируйте флотилию командой `!анкета`")
             return
         
-        await ctx.send(
-            "🚀 **Добавление корабля**\n"
-            "Введите данные в формате:\n"
-            "`[Тип] пр-к [Проект] - [Позывной]`\n"
-            "(или полный формат: `... - [Экипаж]/[Макс] - [Статус]`)\n\n"
-            "**Доступные пресеты проектов:**\n"
-            "• Севастополь (Sevastopol)\n"
-            "• Тайфун (Typhon)\n"
-            "• Гладиатор (Gladiator)\n"
-            "• Наварин (Navarin)\n"
-            "• Гепард (Gepard)\n"
-            "• Молния (Lightning)\n\n"
-            "Пример: `Ударный Корвет пр-к Молния - Находчивый`"
+        if not ship_data:
+            await ctx.send(
+                "🚀 **Добавление корабля**\n"
+                "Введите данные в одном из форматов:\n"
+                "1. `!добавить_корабль [Проект] [Позывной]`\n"
+                "   *Пример: `!добавить_корабль Севастополь Призрак`*\n\n"
+                "2. `!добавить_корабль [Тип] пр-к [Проект] - [Позывной]`\n"
+                "   *Пример: `!добавить_корабль Ударный Корвет пр-к Молния - Находчивый`*\n\n"
+                "**Доступные проекты:** " + ", ".join(list(self.get_available_projects()))
+            )
+            return
+
+        parsed = parse_ship_input(ship_data)
+        
+        if not parsed:
+            await ctx.send(
+                "❌ Не удалось распознать формат.\n"
+                "Попробуйте: `!добавить_корабль Севастополь Призрак`"
+            )
+            return
+        
+        # Создаем корабль
+        ship = await self.db.add_ship(
+            fleet_id=fleet.id,
+            ship_class=parsed['ship_class'].value,
+            project=parsed['project'],
+            callsign=parsed['callsign'],
+            current_crew=parsed['current_crew'],
+            required_crew=parsed['required_crew'],
+            status=parsed['status']
         )
         
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
+        # Добавляем базовые модули
+        await self.equip_default_modules(ship)
         
-        try:
-            msg = await self.bot.wait_for('message', check=check, timeout=120.0)
-            parsed = parse_ship_input(msg.content)
+        # Получаем обновленный корабль с модулями для вывода
+        ship = await self.db.get_ship(ship.id)
+        
+        embed = discord.Embed(
+            title="✅ Корабль добавлен и оснащен!",
+            color=0x2ecc71
+        )
+        embed.add_field(name="Позывной", value=f"**{ship.callsign}**", inline=True)
+        embed.add_field(name="Проект", value=ship.project, inline=True)
+        embed.add_field(name="Класс", value=ship.ship_class.replace('_', ' ').title(), inline=True)
+        embed.add_field(name="Экипаж", value=f"{ship.current_crew}/{ship.required_crew}", inline=True)
+        
+        if ship.modules:
+            mods_list = "\n".join([f"• {m.module.name} x{m.count}" for m in ship.modules if m.module])
+            embed.add_field(name="Установленное оборудование", value=mods_list, inline=False)
             
-            if not parsed:
-                await ctx.send(
-                    "❌ Не удалось распознать формат.\n"
-                    "Убедитесь, что используете формат:\n"
-                    "`Ударный Корвет пр-к Молния - Находчивый`"
-                )
-                return
-            
-            # Создаем корабль
-            ship = await self.db.add_ship(
-                fleet_id=fleet.id,
-                ship_class=parsed['ship_class'].value,
-                project=parsed['project'],
-                callsign=parsed['callsign'],
-                current_crew=parsed['current_crew'],
-                required_crew=parsed['required_crew'],
-                status=parsed['status']
-            )
-            
-            # Добавляем базовые модули
-            await self.equip_default_modules(ship)
-            
-            await ctx.send(
-                f"✅ Корабль добавлен и оснащен!\n"
-                f"**{parsed['ship_class'].value.replace('_', ' ').title()}** \"{parsed['callsign']}\"\n"
-                f"Проект: {parsed['project']}\n"
-                f"Экипаж: {parsed['current_crew']}/{parsed['required_crew']}\n"
-                f"Статус: {parsed['status']}"
-            )
-            
-        except TimeoutError:
-            await ctx.send("⏰ Время ожидания истекло.")
+        await ctx.send(embed=embed)
+
+    def get_available_projects(self):
+        from utils.ship_presets import SHIP_PRESETS
+        return [p.capitalize() for p in SHIP_PRESETS.keys()]
 
     async def equip_default_modules(self, ship):
-        """Устанавливает базовые модули в зависимости от класса или проекта"""
+        """Устанавливает базовые модули из пресетов"""
+        from utils.ship_presets import SHIP_PRESETS
+        
+        project_key = ship.project.lower()
+        if project_key not in SHIP_PRESETS:
+            return
+
+        preset = SHIP_PRESETS[project_key]
         all_modules = await self.db.get_all_modules()
         
-        # Helper to find module ID by partial name
         def find_id(name_part):
             for m in all_modules:
                 if name_part.lower() in m['name'].lower():
                     return m['id']
             return None
 
-        # Project-specific loadouts
-        project_name = ship.project.lower()
-        loadout = []
-        
-        if "севастополь" in project_name or "sevastopol" in project_name:
-            loadout = [
-                ("МК-2-180", 3), ("МК-6-180", 1), ("АК-725", 6), 
-                ("Зенит", 8), ("Спринт", 15), ("Х-15", 2),
-                ("Д-30С", 4), ("НК-30", 4), # Assumptions for fleet speed
-                ("Топливный", 10), ("Усиленная", 4), ("АСО-75", 4)
-            ]
-        elif "тайфун" in project_name or "typhon" in project_name:
-            loadout = [
-                ("2А37", 6), ("Зенит", 4), ("Спринт", 9),
-                ("РД-51", 4), ("Топливный", 8), ("Усиленная", 2)
-            ]
-        elif "гладиатор" in project_name or "gladiator" in project_name:
-            loadout = [
-                ("АК-100", 4), ("Д-30С", 2), ("Надир", 2), ("Палаш-1", 2),
-                ("АСО-75", 2), ("Топливный", 2), ("Сталь-1", 2)
-            ]
-        elif "наварин" in project_name or "navarin" in project_name:
-            loadout = [
-                ("АК-725", 2), ("Зенит", 2), ("ФАБ-1000", 2),
-                ("АСО-75", 1), ("РД-51", 1), ("Топливный", 1)
-            ]
-        elif "гепард" in project_name or "gepard" in project_name:
-            loadout = [
-                ("2А37", 4), ("Надир", 2), ("Спринт", 4), ("Палаш-1", 2),
-                ("РД-51", 2), ("Топливный", 2), ("Сталь-1", 1)
-            ]
-        elif "молния" in project_name or "lightning" in project_name:
-            loadout = [
-                ("АК-100", 2), ("РД-51", 2), ("Топливный", 1)
-            ]
-        else:
-            # Fallback to class-based defaults
-            if "корвет" in ship.ship_class:
-                loadout = [("Маневровый", 1), ("Топливный", 1), ("Обшивка", 1)]
-            elif "фрегат" in ship.ship_class:
-                loadout = [("РД-51", 1), ("Топливный", 2), ("Обшивка", 1), ("Сталь-1", 1), ("37мм", 2)]
-            elif "крейсер" in ship.ship_class:
-                loadout = [("РД-51", 4), ("Топливный", 4), ("Усиленная", 2), ("Сталь-1", 4), ("180мм", 2), ("37мм", 4)]
-            
-        for name_part, count in loadout:
-            mod_id = find_id(name_part)
+        for mod_name, count in preset["loadout"]:
+            mod_id = find_id(mod_name)
             if mod_id:
-                await self.db.add_module_to_ship(ship.id, mod_id, count)
+                try:
+                    await self.db.add_module_to_ship(ship.id, mod_id, count)
+                except Exception as e:
+                    print(f"Error adding module {mod_name}: {e}")
     
     @commands.command(name="корабль", aliases=["ship", "stats", "статистика"])
     async def show_ship_stats(self, ctx, *, callsign: str):

@@ -2,6 +2,7 @@ import re
 import functools
 from typing import Optional, Tuple
 from .constants import ShipClass, SHIP_SPECS, ShipType, SHIP_TRANSLATIONS
+from .ship_presets import SHIP_PRESETS
 
 def parse_ship_class(text: str) -> Optional[ShipClass]:
     """Определяет класс корабля из текста"""
@@ -41,10 +42,34 @@ def format_number(amount: int) -> str:
 def parse_ship_input(text: str) -> Optional[dict]:
     """
     Парсит строку формата:
-    "Ударный Корвет пр-к 'Молния' - 'Находчивый'"
-    (Опционально: " - 5/10 - Легкие повреждения")
+    1. "Ударный Корвет пр-к 'Молния' - 'Находчивый'" (Полный)
+    2. "Севастополь Призрак" (Упрощенный)
     """
-    # Обновленное регулярное выражение
+    text = text.strip()
+    
+    # Сначала пробуем упрощенный формат: "Проект Позывной" или "Проект - Позывной"
+    # Проверяем, начинается ли строка с известного проекта
+    for project_name in SHIP_PRESETS.keys():
+        if text.lower().startswith(project_name.lower()):
+            # Нашли проект. Остаток строки - позывной.
+            remaining = text[len(project_name):].strip().lstrip('-').strip()
+            if not remaining:
+                continue # Возможно это просто название проекта без позывного
+            
+            preset = SHIP_PRESETS[project_name.lower()]
+            ship_class = preset["class"]
+            specs = SHIP_SPECS[ship_class]
+            
+            return {
+                "ship_class": ship_class,
+                "project": project_name.capitalize(),
+                "callsign": remaining.strip('"\''),
+                "current_crew": specs[1],
+                "required_crew": specs[1],
+                "status": "в_строю"
+            }
+
+    # Если не подошло, пробуем классический регулярный парсинг
     pattern = r'([а-яА-Я\s]+)\s+пр-к\s*["\']?([^"\']+)["\']?\s*-\s*["\']?([^"\']+)["\']?(?:\s*-\s*(\d+)/(\d+)\s*-\s*([а-яА-Я\s]+))?'
     
     match = re.search(pattern, text, re.IGNORECASE)
@@ -57,7 +82,11 @@ def parse_ship_input(text: str) -> Optional[dict]:
 
     ship_class = parse_ship_class(ship_type_str)
     if not ship_class:
-        return None
+        # Может быть проект известен?
+        if project.lower() in SHIP_PRESETS:
+            ship_class = SHIP_PRESETS[project.lower()]["class"]
+        else:
+            return None
     
     # Проверяем наличие опциональных групп
     if match.group(4) and match.group(5) and match.group(6):
