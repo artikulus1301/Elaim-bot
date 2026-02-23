@@ -3,7 +3,7 @@ from .constants import ShipClass
 # Формат: [Имя модуля в БД, количество]
 # Используем частичное совпадение имен из списка БД
 
-SHIP_PRESETS = {
+_PRESETS_DATA = {
     "sevastopol": {
         "class": ShipClass.HEAVY_CRUISER,
         "loadout": [
@@ -120,3 +120,25 @@ SHIP_PRESETS = {
         ]
     }
 }
+
+# Добавляем русские алиасы
+SHIP_PRESETS = _PRESETS_DATA.copy()
+SHIP_PRESETS.update({
+    "севастополь": _PRESETS_DATA["sevastopol"],
+    "варяг": _PRESETS_DATA["varyag"],
+    "номад": _PRESETS_DATA["nomad"],
+    "негев": _PRESETS_DATA["negev"],
+    "гладиатор": _PRESETS_DATA["gladiator"],
+    "молния": _PRESETS_DATA["lightning"],
+    "паладин": _PRESETS_DATA["paladin"],
+    "неустрашимый": _PRESETS_DATA["intrepid"],
+    "наварин": _PRESETS_DATA["navarin"],
+    "жаворонок": _PRESETS_DATA["skylark"],
+    "фенек": _PRESETS_DATA["fenek"],
+    "гепард": _PRESETS_DATA["gepard"],
+    "пересмешник": _PRESETS_DATA["mockingbird"],
+    "длинный лук": _PRESETS_DATA["longbow"],
+    "оса": _PRESETS_DATA["wasp"],
+    "тайфун": _PRESETS_DATA["typhon"],
+    "ярс": _PRESETS_DATA["yars"],
+})

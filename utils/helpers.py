@@ -48,13 +48,15 @@ def parse_ship_input(text: str) -> Optional[dict]:
     text = text.strip()
     
     # Сначала пробуем упрощенный формат: "Проект Позывной" или "Проект - Позывной"
-    # Проверяем, начинается ли строка с известного проекта
-    for project_name in SHIP_PRESETS.keys():
+    # Сортируем ключи по длине (деск), чтобы сначала матчились длинные названия
+    sorted_projects = sorted(SHIP_PRESETS.keys(), key=len, reverse=True)
+    
+    for project_name in sorted_projects:
         if text.lower().startswith(project_name.lower()):
             # Нашли проект. Остаток строки - позывной.
             remaining = text[len(project_name):].strip().lstrip('-').strip()
             if not remaining:
-                continue # Возможно это просто название проекта без позывного
+                continue # Может это просто название проекта без позывного
             
             preset = SHIP_PRESETS[project_name.lower()]
             ship_class = preset["class"]
