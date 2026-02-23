@@ -174,8 +174,47 @@ class Database:
                     return dict(row)
         return None
 
+    async def get_ship(self, ship_id: int) -> Optional[Ship]:
+        """Get a ship by ID with its modules"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT id, fleet_id, ship_class, project, callsign, current_crew, 
+                   required_crew, status, created_at FROM ships WHERE id = ?""",
+                (ship_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                
+                ship_dict = dict(row)
+                # Get modules for this ship
+                modules_data = await self.get_ship_modules(row['id'])
+                ship_modules = []
+                for mod_data in modules_data:
+                    module = Module(
+                        id=mod_data['module_id'],
+                        name=mod_data['name'],
+                        type=mod_data['type'],
+                        weight=mod_data['weight'],
+                        price=mod_data['price'],
+                        stats=json.loads(mod_data['stats']) if isinstance(mod_data['stats'], str) else mod_data['stats']
+                    )
+                    ship_modules.append(ShipModule(
+                        id=mod_data['id'],
+                        ship_id=row['id'],
+                        module_id=mod_data['module_id'],
+                        count=mod_data['count'],
+                        module=module
+                    ))
+                ship_dict['modules'] = ship_modules
+                # Parse datetime if present
+                if ship_dict.get('created_at'):
+                    ship_dict['created_at'] = parse_datetime(ship_dict['created_at'])
+                return Ship(**ship_dict)
+
     async def add_ship(self, fleet_id: int, ship_class: str, project: str, callsign: str,
-                      current_crew: int, required_crew: int, status: str = "в_строю") -> int:
+                      current_crew: int, required_crew: int, status: str = "в_строю") -> Ship:
         """Add a ship to a fleet"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
@@ -184,7 +223,8 @@ class Database:
                 (fleet_id, ship_class, project, callsign, current_crew, required_crew, status)
             )
             await db.commit()
-            return cursor.lastrowid
+            ship_id = cursor.lastrowid
+            return await self.get_ship(ship_id)
 
     async def add_module_to_ship(self, ship_id: int, module_id: int, count: int = 1) -> int:
         """Add a module to a ship"""
